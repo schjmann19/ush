@@ -1,0 +1,1 @@
+int builtin_dot(int argc, char *argv[]);

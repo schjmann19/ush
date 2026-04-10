@@ -1,0 +1,1 @@
+int echo(int argc, char *argv[]);

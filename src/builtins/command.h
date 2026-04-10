@@ -1,0 +1,1 @@
+int builtin_command(int argc, char *argv[]);

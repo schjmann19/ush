@@ -1,0 +1,1 @@
+int builtin_true(int argc, char *argv[]);

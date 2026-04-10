@@ -1,0 +1,8 @@
+//"(test builtin) Less than 30KB!\n",
+//"(test builtin) Hello world.\n",
+//"(test builtin) This isn't a test.\n",
+//"(test builtin) This is a test.\n",
+//"(test builtin) bleh\n",
+//"(test builtin) A random message.\n",
+//"(test builtin) strictly C99 + POSIX.1-2008\n"
+"(test builtin)\n"

@@ -1,0 +1,9 @@
+alias __test='_test_builtin_'
+
+export examplevar=ASD
+
+alias examplealias='echo hey'
+
+
+alias ls='ls --color=auto'
+# this is a comment

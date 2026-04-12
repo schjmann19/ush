@@ -16,6 +16,7 @@ RELEASE_CFLAGS = $(CSTD) $(POSIX) $(WARN) -O2 -DNDEBUG
 LDFLAGS ?= -flto
 
 TARGET = ush
+OBJECT_DIR = obj
 
 SRCS = src/main.c src/shell.c src/builtins/builtins.c \
        src/builtins/echo.c src/builtins/cd.c src/builtins/exit.c \
@@ -25,14 +26,15 @@ SRCS = src/main.c src/shell.c src/builtins/builtins.c \
        src/builtins/alias.c \
        src/builtins/_test_builtin.c
 
-OBJS = $(SRCS:.c=.o)
+OBJS = $(patsubst src/%.c,$(OBJECT_DIR)/%.o,$(SRCS))
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
 
-%.o: %.c
+$(OBJECT_DIR)/%.o: src/%.c
+	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 release: CFLAGS = $(RELEASE_CFLAGS)
@@ -45,10 +47,13 @@ debug: clean all
 musl: CC = $(MUSL_CC)
 musl: clean all
 
+test: $(TARGET)
+	./ush < tests/run.sh
+
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -rf $(OBJECT_DIR) $(TARGET)
 
 cleanobj:
-	rm -f $(OBJS)
+	rm -rf $(OBJECT_DIR)
 
-.PHONY: all clean release debug
+.PHONY: all clean release debug musl cleanobj

@@ -49,11 +49,7 @@ int main(int argc, char **argv) {
         }
 
         int exit_requested = 0;
-        if (ncmds == 1 && is_builtin(cmds[0].argv[0])) {
-            run_builtin_with_redirection(&cmds[0], &exit_requested);
-        } else {
-            run_pipeline(cmds, ncmds);
-        }
+        execute_commands(cmds, ncmds, &exit_requested);
 
         free_commands(cmds, ncmds);
         free(line);

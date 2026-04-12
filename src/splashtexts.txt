@@ -1,4 +1,4 @@
-//"(test builtin) Less than 30KB!\n",
+//"(test builtin) Less than 40KB!\n",
 //"(test builtin) Hello world.\n",
 //"(test builtin) This isn't a test.\n",
 //"(test builtin) This is a test.\n",

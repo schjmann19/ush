@@ -20,12 +20,50 @@
 #define MAX_HISTORY 10000
 #define USHRC ".ushrc"
 
+enum command_type {
+    CMD_SIMPLE,
+    CMD_IF,
+    CMD_FOR,
+    CMD_CASE,
+    CMD_FUNCTION_DEF,
+};
+
+struct case_item {
+    char *pattern;
+    struct command *cmds;
+    int ncmds;
+};
+
 struct command {
+    enum command_type type;
     char **argv;
     int argc;
     char *in;
     char *out;
     int append;
+
+    /* compound command data */
+    struct command *cond_cmds;
+    int cond_ncmds;
+    struct command *then_cmds;
+    int then_ncmds;
+    struct command *else_cmds;
+    int else_ncmds;
+
+    char *for_var;
+    char **for_values;
+    int for_nvalues;
+    struct command *for_body;
+    int for_body_ncmds;
+    char *for_body_line;
+
+    char *case_word;
+    struct case_item *case_items;
+    int case_item_count;
+
+    char *func_name;
+    struct command *func_body;
+    int func_ncmds;
 };
 
 extern char *history[MAX_HISTORY];
@@ -36,6 +74,7 @@ int run_builtin(struct command *cmd, int *exit_requested);
 int parse_line(char *line, struct command **cmds_out, int *ncmds_out);
 void free_commands(struct command *cmds, int ncmds);
 int run_pipeline(struct command *cmds, int ncmds);
+int execute_commands(struct command *cmds, int ncmds, int *exit_requested);
 char *dup_token(const char *start, size_t len);
 char *expand_variables(const char *tok);
 char *next_token(char **sp);

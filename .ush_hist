@@ -166,3 +166,9 @@ make musl
 yay
 clear
 exit
+clear
+fastfetch
+exit
+./tests/run.sh
+clear
+exit

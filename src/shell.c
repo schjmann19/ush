@@ -1350,6 +1350,124 @@ static int parse_function_tokens(char **tokens, int ntokens, struct command **cm
     return 0;
 }
 
+static int parse_while_tokens(char **tokens, int ntokens, struct command **cmds_out, int *ncmds_out) {
+    if (ntokens < 5 || strcmp(tokens[0], "while") != 0) {
+        fprintf(stderr, "syntax error: expected while loop\n");
+        return -1;
+    }
+
+    int do_pos = -1;
+    for (int i = 1; i < ntokens; i++) {
+        if (strcmp(tokens[i], "do") == 0) {
+            do_pos = i;
+            break;
+        }
+    }
+    if (do_pos < 0) {
+        fprintf(stderr, "syntax error: expected 'do' in while loop\n");
+        return -1;
+    }
+
+    int done_pos = -1;
+    for (int i = do_pos + 1; i < ntokens; i++) {
+        if (strcmp(tokens[i], "done") == 0) {
+            done_pos = i;
+            break;
+        }
+    }
+    if (done_pos < 0) {
+        fprintf(stderr, "syntax error: expected 'done' in while loop\n");
+        return -1;
+    }
+
+    char *cond_line = join_tokens(tokens, 1, do_pos);
+    char *body_line = join_tokens(tokens, do_pos + 1, done_pos);
+
+    if (!cond_line || !body_line) {
+        free(cond_line);
+        free(body_line);
+        return -1;
+    }
+
+    struct command *cmds = calloc(1, sizeof(*cmds));
+    if (!cmds) {
+        free(cond_line);
+        free(body_line);
+        return -1;
+    }
+
+    cmds[0].type = CMD_WHILE;
+    cmds[0].loop_cond_line = cond_line;
+    cmds[0].loop_cond_cmds = NULL;
+    cmds[0].loop_cond_ncmds = 0;
+    cmds[0].loop_body_line = body_line;
+    cmds[0].loop_body_cmds = NULL;
+    cmds[0].loop_body_ncmds = 0;
+
+    *cmds_out = cmds;
+    *ncmds_out = 1;
+    return 0;
+}
+
+static int parse_until_tokens(char **tokens, int ntokens, struct command **cmds_out, int *ncmds_out) {
+    if (ntokens < 5 || strcmp(tokens[0], "until") != 0) {
+        fprintf(stderr, "syntax error: expected until loop\n");
+        return -1;
+    }
+
+    int do_pos = -1;
+    for (int i = 1; i < ntokens; i++) {
+        if (strcmp(tokens[i], "do") == 0) {
+            do_pos = i;
+            break;
+        }
+    }
+    if (do_pos < 0) {
+        fprintf(stderr, "syntax error: expected 'do' in until loop\n");
+        return -1;
+    }
+
+    int done_pos = -1;
+    for (int i = do_pos + 1; i < ntokens; i++) {
+        if (strcmp(tokens[i], "done") == 0) {
+            done_pos = i;
+            break;
+        }
+    }
+    if (done_pos < 0) {
+        fprintf(stderr, "syntax error: expected 'done' in until loop\n");
+        return -1;
+    }
+
+    char *cond_line = join_tokens(tokens, 1, do_pos);
+    char *body_line = join_tokens(tokens, do_pos + 1, done_pos);
+
+    if (!cond_line || !body_line) {
+        free(cond_line);
+        free(body_line);
+        return -1;
+    }
+
+    struct command *cmds = calloc(1, sizeof(*cmds));
+    if (!cmds) {
+        free(cond_line);
+        free(body_line);
+        return -1;
+    }
+
+    cmds[0].type = CMD_UNTIL;
+    cmds[0].loop_cond_line = cond_line;
+    cmds[0].loop_cond_cmds = NULL;
+    cmds[0].loop_cond_ncmds = 0;
+    cmds[0].loop_body_line = body_line;
+    cmds[0].loop_body_cmds = NULL;
+    cmds[0].loop_body_ncmds = 0;
+
+    *cmds_out = cmds;
+    *ncmds_out = 1;
+    return 0;
+}
+
 static int parse_compound_command(char **tokens, int ntokens, struct command **cmds_out, int *ncmds_out) {
     if (ntokens == 0) return -1;
     if (strcmp(tokens[0], "if") == 0) {
@@ -1357,6 +1475,12 @@ static int parse_compound_command(char **tokens, int ntokens, struct command **c
     }
     if (strcmp(tokens[0], "for") == 0) {
         return parse_for_tokens(tokens, ntokens, cmds_out, ncmds_out);
+    }
+    if (strcmp(tokens[0], "while") == 0) {
+        return parse_while_tokens(tokens, ntokens, cmds_out, ncmds_out);
+    }
+    if (strcmp(tokens[0], "until") == 0) {
+        return parse_until_tokens(tokens, ntokens, cmds_out, ncmds_out);
     }
     if (strcmp(tokens[0], "case") == 0) {
         return parse_case_tokens(tokens, ntokens, cmds_out, ncmds_out);
@@ -1385,7 +1509,8 @@ int parse_line(char *line, struct command **cmds_out, int *ncmds_out) {
         free(line_copy);
         return 0;
     }
-    if (strcmp(tokens[0], "if") == 0 || strcmp(tokens[0], "for") == 0 || strcmp(tokens[0], "case") == 0 ||
+    if (strcmp(tokens[0], "if") == 0 || strcmp(tokens[0], "for") == 0 || strcmp(tokens[0], "while") == 0 || 
+        strcmp(tokens[0], "until") == 0 || strcmp(tokens[0], "case") == 0 ||
         (ntokens >= 5 && strcmp(tokens[1], "(") == 0 && strcmp(tokens[2], ")") == 0 && strcmp(tokens[3], "{") == 0)) {
         parsed = parse_compound_command(tokens, ntokens, cmds_out, ncmds_out);
     }
@@ -1690,6 +1815,14 @@ static void free_command(struct command *cmd) {
     if (cmd->func_body) {
         free_commands(cmd->func_body, cmd->func_ncmds);
     }
+    free(cmd->loop_cond_line);
+    if (cmd->loop_cond_cmds) {
+        free_commands(cmd->loop_cond_cmds, cmd->loop_cond_ncmds);
+    }
+    free(cmd->loop_body_line);
+    if (cmd->loop_body_cmds) {
+        free_commands(cmd->loop_body_cmds, cmd->loop_body_ncmds);
+    }
 }
 
 void free_commands(struct command *cmds, int ncmds) {
@@ -1833,6 +1966,54 @@ static int run_command(struct command *cmd, int *exit_requested) {
         }
         case CMD_FUNCTION_DEF:
             return 0;
+        case CMD_WHILE: {
+            while (1) {
+                struct command *cond_cmds = NULL;
+                int cond_ncmds = 0;
+                if (parse_line(cmd->loop_cond_line, &cond_cmds, &cond_ncmds) != 0) {
+                    fprintf(stderr, "shell: failed to parse while condition\n");
+                    return 1;
+                }
+                int cond_status = execute_commands(cond_cmds, cond_ncmds, exit_requested);
+                free_commands(cond_cmds, cond_ncmds);
+                
+                if (cond_status != 0) break;
+                
+                struct command *body_cmds = NULL;
+                int body_ncmds = 0;
+                if (parse_line(cmd->loop_body_line, &body_cmds, &body_ncmds) != 0) {
+                    fprintf(stderr, "shell: failed to parse while body\n");
+                    return 1;
+                }
+                execute_commands(body_cmds, body_ncmds, exit_requested);
+                free_commands(body_cmds, body_ncmds);
+            }
+            return 0;
+        }
+        case CMD_UNTIL: {
+            while (1) {
+                struct command *cond_cmds = NULL;
+                int cond_ncmds = 0;
+                if (parse_line(cmd->loop_cond_line, &cond_cmds, &cond_ncmds) != 0) {
+                    fprintf(stderr, "shell: failed to parse until condition\n");
+                    return 1;
+                }
+                int cond_status = execute_commands(cond_cmds, cond_ncmds, exit_requested);
+                free_commands(cond_cmds, cond_ncmds);
+                
+                if (cond_status == 0) break;
+                
+                struct command *body_cmds = NULL;
+                int body_ncmds = 0;
+                if (parse_line(cmd->loop_body_line, &body_cmds, &body_ncmds) != 0) {
+                    fprintf(stderr, "shell: failed to parse until body\n");
+                    return 1;
+                }
+                execute_commands(body_cmds, body_ncmds, exit_requested);
+                free_commands(body_cmds, body_ncmds);
+            }
+            return 0;
+        }
         case CMD_SIMPLE:
             if (cmd->argc > 0 && is_shell_function(cmd->argv[0])) {
                 return run_shell_function(cmd->argv[0]);
@@ -2039,6 +2220,72 @@ int run_builtin_with_redirection(struct command *cmd, int *exit_requested) {
     return result;
 }
 
+static int is_compound_keyword(const char *word) {
+    return strcmp(word, "if") == 0 || strcmp(word, "for") == 0 || 
+           strcmp(word, "while") == 0 || strcmp(word, "until") == 0 || 
+           strcmp(word, "case") == 0;
+}
+
+static int needs_continuation(const char *line) {
+    char *copy = strdup(line);
+    if (!copy) return 0;
+    
+    char **tokens = NULL;
+    int ntokens = 0;
+    tokenize_line(copy, &tokens, &ntokens);
+    
+    if (ntokens == 0) {
+        free_tokens(tokens, ntokens);
+        free(copy);
+        return 0;
+    }
+    
+    int result = 0;
+    if (is_compound_keyword(tokens[0])) {
+        if (strcmp(tokens[0], "if") == 0) {
+            int has_then = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "then") == 0) { has_then = 1; break; }
+            }
+            int has_fi = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "fi") == 0) { has_fi = 1; break; }
+            }
+            if (!has_then || !has_fi) result = 1;
+        } else if (strcmp(tokens[0], "for") == 0) {
+            int has_do = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "do") == 0) { has_do = 1; break; }
+            }
+            int has_done = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "done") == 0) { has_done = 1; break; }
+            }
+            if (!has_do || !has_done) result = 1;
+        } else if (strcmp(tokens[0], "while") == 0 || strcmp(tokens[0], "until") == 0) {
+            int has_do = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "do") == 0) { has_do = 1; break; }
+            }
+            int has_done = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "done") == 0) { has_done = 1; break; }
+            }
+            if (!has_do || !has_done) result = 1;
+        } else if (strcmp(tokens[0], "case") == 0) {
+            int has_esac = 0;
+            for (int i = 0; i < ntokens; i++) {
+                if (strcmp(tokens[i], "esac") == 0) { has_esac = 1; break; }
+            }
+            if (!has_esac) result = 1;
+        }
+    }
+    
+    free_tokens(tokens, ntokens);
+    free(copy);
+    return result;
+}
+
 char *read_line(void) {
     if (!isatty(STDIN_FILENO)) {
         char *line = NULL;
@@ -2046,6 +2293,30 @@ char *read_line(void) {
         ssize_t n = getline(&line, &len, stdin);
         if (n == -1) return NULL;
         if (n > 0 && line[n - 1] == '\n') line[n - 1] = '\0';
+        
+        while (needs_continuation(line)) {
+            char *next_line = NULL;
+            size_t next_len = 0;
+            ssize_t next_n = getline(&next_line, &next_len, stdin);
+            if (next_n == -1) {
+                break;
+            }
+            if (next_n > 0 && next_line[next_n - 1] == '\n') {
+                next_line[next_n - 1] = '\0';
+            }
+            
+            size_t total_len = strlen(line) + strlen(next_line) + 2;
+            char *combined = malloc(total_len);
+            if (!combined) {
+                free(next_line);
+                return line;
+            }
+            snprintf(combined, total_len, "%s\n%s", line, next_line);
+            free(line);
+            free(next_line);
+            line = combined;
+        }
+        
         return line;
     }
 

@@ -26,6 +26,8 @@ enum command_type {
     CMD_FOR,
     CMD_CASE,
     CMD_FUNCTION_DEF,
+    CMD_WHILE,
+    CMD_UNTIL,
 };
 
 struct case_item {
@@ -64,6 +66,14 @@ struct command {
     char *func_name;
     struct command *func_body;
     int func_ncmds;
+    
+    /* while/until loop condition and body */
+    struct command *loop_cond_cmds;
+    int loop_cond_ncmds;
+    char *loop_cond_line;
+    struct command *loop_body_cmds;
+    int loop_body_ncmds;
+    char *loop_body_line;
     
     /* Logical operators: 0=none, 1=&&, 2=|| */
     int op_after;

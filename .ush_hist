@@ -242,3 +242,6 @@ __test
 _test_builtin_
 clear
 exit
+./ush ./test_while.sh
+exit
+exit

@@ -64,6 +64,9 @@ struct command {
     char *func_name;
     struct command *func_body;
     int func_ncmds;
+    
+    /* Logical operators: 0=none, 1=&&, 2=|| */
+    int op_after;
 };
 
 extern char *history[MAX_HISTORY];
@@ -83,5 +86,7 @@ char *read_line(void);
 void load_history(const char *file);
 void save_history(const char *file);
 void source_file(const char *file);
+void init_shell_special_vars(pid_t pid);
+void set_positional_args(char **argv, int argc);
 
 #endif /* SHELL_H */

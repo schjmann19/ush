@@ -5,6 +5,12 @@
 char *history[MAX_HISTORY];
 int hist_count = 0;
 
+/* Special variables for POSIX compliance */
+static int last_exit_status = 0;
+static pid_t shell_pid = 0;
+static char **positional_args = NULL;
+static int positional_args_count = 0;
+
 char *dup_token(const char *start, size_t len) {
     char *out = malloc(len + 1);
     if (!out) {
@@ -150,14 +156,498 @@ static char *join_tokens(char **tokens, int start, int end) {
     return out;
 }
 
-char *expand_variables(const char *tok) {
-    if (!tok || tok[0] != '$' || tok[1] == '\0') {
-        return strdup(tok ? tok : "");
+/* Expand ${VAR} style parameter expansion */
+static char *expand_param_expansion(const char *str) {
+    if (!str || str[0] != '$' || str[1] != '{') {
+        return strdup(str ? str : "");
     }
 
-    const char *name = tok + 1;
-    const char *val = getenv(name);
-    return strdup(val ? val : "");
+    const char *p = str + 2;
+    const char *end = strchr(p, '}');
+    if (!end) {
+        return strdup(str);
+    }
+
+    size_t param_len = (size_t)(end - p);
+    char param_str[256];
+    if (param_len >= sizeof(param_str)) {
+        return strdup(str);
+    }
+    memcpy(param_str, p, param_len);
+    param_str[param_len] = '\0';
+
+    /* Handle ${#VAR} - length expansion */
+    if (param_str[0] == '#') {
+        const char *var_name = param_str + 1;
+        const char *val = getenv(var_name);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%zu", val ? strlen(val) : 0);
+        
+        char *result = malloc(strlen(buf) + strlen(end + 1) + 1);
+        if (result) {
+            strcpy(result, buf);
+            strcat(result, end + 1);
+        }
+        return result ? result : strdup("");
+    }
+
+    /* Handle ${VAR:mode} expansions */
+    const char *colon_pos = strchr(param_str, ':');
+    if (colon_pos) {
+        size_t var_name_len = (size_t)(colon_pos - param_str);
+        char var_name[256];
+        memcpy(var_name, param_str, var_name_len);
+        var_name[var_name_len] = '\0';
+
+        const char *expansion_part = colon_pos + 1;
+        const char *val = getenv(var_name);
+        int is_empty = !val || *val == '\0';
+
+        /* ${VAR:-default} - use default if empty/unset */
+        if (*expansion_part == '-') {
+            if (is_empty) {
+                char *result = malloc(strlen(expansion_part) + strlen(end + 1) + 1);
+                if (result) {
+                    strcpy(result, expansion_part + 1);
+                    strcat(result, end + 1);
+                }
+                return result ? result : strdup("");
+            }
+            char *result = malloc(strlen(val) + strlen(end + 1) + 1);
+            if (result) {
+                strcpy(result, val);
+                strcat(result, end + 1);
+            }
+            return result ? result : strdup("");
+        }
+
+        /* ${VAR:+alternate} - use alternate if set/non-empty */
+        if (*expansion_part == '+') {
+            if (!is_empty) {
+                char *result = malloc(strlen(expansion_part) + strlen(end + 1) + 1);
+                if (result) {
+                    strcpy(result, expansion_part + 1);
+                    strcat(result, end + 1);
+                }
+                return result ? result : strdup("");
+            }
+            return strdup(end + 1);
+        }
+
+        /* ${VAR:=default} - assign default if empty/unset */
+        if (*expansion_part == '=') {
+            if (is_empty) {
+                setenv(var_name, expansion_part + 1, 1);
+                char *result = malloc(strlen(expansion_part) + strlen(end + 1) + 1);
+                if (result) {
+                    strcpy(result, expansion_part + 1);
+                    strcat(result, end + 1);
+                }
+                return result ? result : strdup("");
+            }
+            char *result = malloc(strlen(val) + strlen(end + 1) + 1);
+            if (result) {
+                strcpy(result, val);
+                strcat(result, end + 1);
+            }
+            return result ? result : strdup("");
+        }
+
+        /* ${VAR:?error} - show error if unset */
+        if (*expansion_part == '?') {
+            if (is_empty) {
+                fprintf(stderr, "parameter expansion error: %s\n", expansion_part + 1);
+                return strdup("");
+            }
+            char *result = malloc(strlen(val) + strlen(end + 1) + 1);
+            if (result) {
+                strcpy(result, val);
+                strcat(result, end + 1);
+            }
+            return result ? result : strdup("");
+        }
+    }
+
+    /* Simple ${VAR} expansion */
+    const char *val = getenv(param_str);
+    char *result = malloc((val ? strlen(val) : 0) + strlen(end + 1) + 1);
+    if (result) {
+        if (val) {
+            strcpy(result, val);
+        } else {
+            result[0] = '\0';
+        }
+        strcat(result, end + 1);
+    }
+    return result ? result : strdup("");
+}
+
+/* Command substitution support */
+static char *execute_command_capture(const char *cmd_str) {
+    if (!cmd_str || *cmd_str == '\0') {
+        return strdup("");
+    }
+
+    int pipe_fd[2];
+    if (pipe(pipe_fd) != 0) {
+        return strdup("");
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fd[0]);
+        close(pipe_fd[1]);
+        return strdup("");
+    }
+
+    if (pid == 0) {
+        /* Child process: redirect stdout to pipe and execute command */
+        close(pipe_fd[0]);
+        dup2(pipe_fd[1], STDOUT_FILENO);
+        close(pipe_fd[1]);
+        signal(SIGINT, SIG_DFL);
+
+        struct command *cmds = NULL;
+        int ncmds = 0;
+        char *cmd_copy = strdup(cmd_str);
+        if (!cmd_copy) {
+            _exit(1);
+        }
+
+        if (parse_line(cmd_copy, &cmds, &ncmds) == 0 && ncmds > 0) {
+            int dummy_exit = 0;
+            execute_commands(cmds, ncmds, &dummy_exit);
+            free_commands(cmds, ncmds);
+        }
+        free(cmd_copy);
+        _exit(0);
+    }
+
+    /* Parent process: read from pipe */
+    close(pipe_fd[1]);
+
+    /* Read all output from the command */
+    size_t cap = 256;
+    size_t len = 0;
+    char *result = malloc(cap);
+    if (!result) {
+        close(pipe_fd[0]);
+        waitpid(pid, NULL, 0);
+        return strdup("");
+    }
+
+    ssize_t nread;
+    char buf[256];
+    while ((nread = read(pipe_fd[0], buf, sizeof(buf))) > 0) {
+        if (len + (size_t)nread >= cap) {
+            cap *= 2;
+            char *tmp = realloc(result, cap);
+            if (!tmp) {
+                close(pipe_fd[0]);
+                waitpid(pid, NULL, 0);
+                free(result);
+                return strdup("");
+            }
+            result = tmp;
+        }
+        memcpy(result + len, buf, (size_t)nread);
+        len += (size_t)nread;
+    }
+
+    close(pipe_fd[0]);
+    waitpid(pid, NULL, 0);
+
+    result[len] = '\0';
+
+    /* Remove trailing newlines from command output */
+    while (len > 0 && result[len - 1] == '\n') {
+        result[len - 1] = '\0';
+        len--;
+    }
+
+    return result;
+}
+
+/* Expand command substitutions in a string */
+static char *expand_command_substitution(const char *str) {
+    if (!str) return strdup("");
+
+    size_t result_cap = 256;
+    size_t result_len = 0;
+    char *result = malloc(result_cap);
+    if (!result) return strdup("");
+
+    const char *p = str;
+    while (*p) {
+        /* Handle backtick substitution: `cmd` */
+        if (*p == '`') {
+            p++;
+            const char *cmd_start = p;
+            size_t cmd_len = 0;
+            while (*p && *p != '`') {
+                cmd_len++;
+                p++;
+            }
+            if (*p == '`') {
+                p++;
+                char *cmd = dup_token(cmd_start, cmd_len);
+                char *output = execute_command_capture(cmd);
+                free(cmd);
+
+                size_t out_len = strlen(output);
+                while (result_len + out_len >= result_cap) {
+                    result_cap *= 2;
+                    char *tmp = realloc(result, result_cap);
+                    if (!tmp) {
+                        free(result);
+                        free(output);
+                        return strdup("");
+                    }
+                    result = tmp;
+                }
+                memcpy(result + result_len, output, out_len);
+                result_len += out_len;
+                free(output);
+                continue;
+            }
+        }
+
+        /* Handle $(...) substitution */
+        if (*p == '$' && *(p + 1) == '(') {
+            p += 2;
+            const char *cmd_start = p;
+            size_t cmd_len = 0;
+            int paren_depth = 1;
+            while (*p && paren_depth > 0) {
+                if (*p == '(') paren_depth++;
+                else if (*p == ')') paren_depth--;
+                if (paren_depth > 0) {
+                    cmd_len++;
+                }
+                p++;
+            }
+            if (paren_depth == 0) {
+                char *cmd = dup_token(cmd_start, cmd_len);
+                char *output = execute_command_capture(cmd);
+                free(cmd);
+
+                size_t out_len = strlen(output);
+                while (result_len + out_len >= result_cap) {
+                    result_cap *= 2;
+                    char *tmp = realloc(result, result_cap);
+                    if (!tmp) {
+                        free(result);
+                        free(output);
+                        return strdup("");
+                    }
+                    result = tmp;
+                }
+                memcpy(result + result_len, output, out_len);
+                result_len += out_len;
+                free(output);
+                continue;
+            }
+        }
+
+        /* Regular character */
+        if (result_len + 1 >= result_cap) {
+            result_cap *= 2;
+            char *tmp = realloc(result, result_cap);
+            if (!tmp) {
+                free(result);
+                return strdup("");
+            }
+            result = tmp;
+        }
+        result[result_len++] = *p++;
+    }
+
+    result[result_len] = '\0';
+    return result;
+}
+
+char *expand_variables(const char *tok) {
+    if (!tok) {
+        return strdup("");
+    }
+
+    char *result = NULL;
+
+    /* Handle ${...} parameter expansion first */
+    if (strstr(tok, "${") != NULL) {
+        result = strdup(tok);
+        if (!result) return strdup("");
+        
+        /* Process all ${...} expansions */
+        int changed = 1;
+        while (changed) {
+            changed = 0;
+            const char *start = strstr(result, "${");
+            if (start) {
+                const char *end = strchr(start, '}');
+                if (end) {
+                    /* Extract and expand this parameter */
+                    char *expanded = expand_param_expansion(start);
+                    
+                    /* Build new result with expanded part */
+                    size_t prefix_len = (size_t)(start - result);
+                    size_t suffix_len = strlen(end + 1);
+                    size_t expanded_len = strlen(expanded);
+                    
+                    char *new_result = malloc(prefix_len + expanded_len + suffix_len + 1);
+                    if (!new_result) {
+                        free(result);
+                        free(expanded);
+                        return strdup("");
+                    }
+                    
+                    memcpy(new_result, result, prefix_len);
+                    memcpy(new_result + prefix_len, expanded, expanded_len);
+                    strcpy(new_result + prefix_len + expanded_len, end + 1);
+                    
+                    free(result);
+                    free(expanded);
+                    result = new_result;
+                    changed = 1;
+                }
+            }
+        }
+        
+        /* Continue with command substitution and variable expansion on result */
+        char *after_cmdsub = expand_command_substitution(result);
+        free(result);
+        
+        /* If no variables, return the result */
+        if (strchr(after_cmdsub, '$') == NULL) {
+            return after_cmdsub;
+        }
+        
+        result = strdup(after_cmdsub);
+        free(after_cmdsub);
+    } else {
+        /* First, handle command substitution in the whole token */
+        char *after_cmdsub = expand_command_substitution(tok);
+        
+        /* If no variables, return the result */
+        if (strchr(after_cmdsub, '$') == NULL) {
+            return after_cmdsub;
+        }
+        
+        result = strdup(after_cmdsub);
+        free(after_cmdsub);
+    }
+
+    /* Now handle variable expansion */
+    size_t result_cap = 4096;
+    char *final_result = malloc(result_cap);
+    if (!final_result) {
+        free(result);
+        return strdup("");
+    }
+    
+    size_t final_len = 0;
+    const char *p = result;
+    
+    while (*p && final_len < result_cap - 1) {
+        if (*p == '$' && *(p + 1) != '\0' && *(p + 1) != '{') {
+            p++;
+            
+            /* Handle special variables: $?, $$, $#, $@, $* */
+            if (*p == '?') {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", last_exit_status);
+                size_t len = strlen(buf);
+                if (final_len + len < result_cap) {
+                    memcpy(final_result + final_len, buf, len);
+                    final_len += len;
+                }
+                p++;
+                continue;
+            }
+            if (*p == '$') {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", (int)shell_pid);
+                size_t len = strlen(buf);
+                if (final_len + len < result_cap) {
+                    memcpy(final_result + final_len, buf, len);
+                    final_len += len;
+                }
+                p++;
+                continue;
+            }
+            if (*p == '#') {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", positional_args_count);
+                size_t len = strlen(buf);
+                if (final_len + len < result_cap) {
+                    memcpy(final_result + final_len, buf, len);
+                    final_len += len;
+                }
+                p++;
+                continue;
+            }
+            if (*p == '@' || *p == '*') {
+                /* $@ and $* expand to all positional arguments */
+                for (int i = 0; i < positional_args_count; i++) {
+                    if (positional_args[i]) {
+                        size_t len = strlen(positional_args[i]);
+                        if (final_len + len < result_cap) {
+                            memcpy(final_result + final_len, positional_args[i], len);
+                            final_len += len;
+                        }
+                        if (i < positional_args_count - 1 && final_len < result_cap - 1) {
+                            final_result[final_len++] = ' ';
+                        }
+                    }
+                }
+                p++;
+                continue;
+            }
+            
+            /* Handle numeric positional parameters and regular variables */
+            if (isdigit((unsigned char)*p)) {
+                int idx = *p - '0';
+                p++;
+                if (idx < positional_args_count && positional_args[idx]) {
+                    size_t len = strlen(positional_args[idx]);
+                    if (final_len + len < result_cap) {
+                        memcpy(final_result + final_len, positional_args[idx], len);
+                        final_len += len;
+                    }
+                }
+                continue;
+            }
+            
+            if (isalpha((unsigned char)*p) || *p == '_') {
+                const char *var_start = p;
+                while (*p && (isalnum((unsigned char)*p) || *p == '_')) {
+                    p++;
+                }
+                size_t var_len = (size_t)(p - var_start);
+                char var_name[256];
+                if (var_len < sizeof(var_name)) {
+                    memcpy(var_name, var_start, var_len);
+                    var_name[var_len] = '\0';
+                    
+                    const char *val = getenv(var_name);
+                    if (val) {
+                        size_t len = strlen(val);
+                        if (final_len + len < result_cap) {
+                            memcpy(final_result + final_len, val, len);
+                            final_len += len;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+        
+        final_result[final_len++] = *p++;
+    }
+    
+    final_result[final_len] = '\0';
+    free(result);
+    return final_result;
 }
 
 void source_file(const char *file) {
@@ -202,6 +692,37 @@ void source_file(const char *file) {
     fclose(f);
 }
 
+void init_shell_special_vars(pid_t pid) {
+    shell_pid = pid;
+    if (!positional_args) {
+        positional_args = calloc(1, sizeof(char *));
+        positional_args_count = 0;
+    }
+}
+
+void set_positional_args(char **argv, int argc) {
+    /* Free old arguments */
+    if (positional_args) {
+        for (int i = 0; i < positional_args_count; i++) {
+            free(positional_args[i]);
+        }
+        free(positional_args);
+    }
+
+    /* Set new arguments */
+    positional_args_count = argc;
+    positional_args = calloc((size_t)(argc + 1), sizeof(char *));
+    if (!positional_args) {
+        positional_args_count = 0;
+        return;
+    }
+
+    for (int i = 0; i < argc; i++) {
+        positional_args[i] = strdup(argv[i] ? argv[i] : "");
+    }
+    positional_args[argc] = NULL;
+}
+
 char *next_token(char **sp) {
     if (!sp || !*sp) {
         return NULL;
@@ -226,12 +747,20 @@ char *next_token(char **sp) {
     }
 
     char *start = p;
-    if (*p == '|' || *p == '<' || *p == '>' || *p == ';' || *p == '(' || *p == ')' || *p == '{' || *p == '}') {
+    if (*p == '|' || *p == '<' || *p == '>' || *p == ';' || *p == '(' || *p == ')' || *p == '{' || *p == '}' || *p == '&') {
         if (*p == '>' && *(p + 1) == '>') {
             *sp = p + 2;
             return dup_token(start, 2);
         }
         if (*p == ';' && *(p + 1) == ';') {
+            *sp = p + 2;
+            return dup_token(start, 2);
+        }
+        if (*p == '&' && *(p + 1) == '&') {
+            *sp = p + 2;
+            return dup_token(start, 2);
+        }
+        if (*p == '|' && *(p + 1) == '|') {
             *sp = p + 2;
             return dup_token(start, 2);
         }
@@ -253,7 +782,43 @@ char *next_token(char **sp) {
             p++;
             continue;
         }
-        if (!in_quote && (isspace((unsigned char)*p) || *p == '|' || *p == '<' || *p == '>' || *p == ';' || *p == '(' || *p == ')' || *p == '{' || *p == '}')) {
+        
+        /* Handle ${...} parameter expansion: don't split inside it */
+        if (!in_quote && *p == '$' && *(p + 1) == '{') {
+            p += 2;
+            int brace_depth = 1;
+            while (*p && brace_depth > 0) {
+                if (*p == '{') brace_depth++;
+                else if (*p == '}') brace_depth--;
+                p++;
+            }
+            continue;
+        }
+        
+        /* Handle command substitution: don't split inside $(...) */
+        if (!in_quote && *p == '$' && *(p + 1) == '(') {
+            p += 2;
+            int paren_depth = 1;
+            while (*p && paren_depth > 0) {
+                if (*p == '(') paren_depth++;
+                else if (*p == ')') paren_depth--;
+                p++;
+            }
+            continue;
+        }
+        
+        /* Handle backtick command substitution: don't split inside backticks */
+        if (!in_quote && *p == '`') {
+            p++;
+            while (*p && *p != '`') {
+                if (*p == '\\') p++;
+                if (*p) p++;
+            }
+            if (*p == '`') p++;
+            continue;
+        }
+        
+        if (!in_quote && (isspace((unsigned char)*p) || *p == '|' || *p == '<' || *p == '>' || *p == ';' || *p == '(' || *p == ')' || *p == '{' || *p == '}' || *p == '&')) {
             break;
         }
         p++;
@@ -853,6 +1418,7 @@ static int parse_line_simple(char *line, struct command **cmds_out, int *ncmds_o
     cur->in = NULL;
     cur->out = NULL;
     cur->append = 0;
+    cur->op_after = 0;
     cur->cond_cmds = NULL;
     cur->cond_ncmds = 0;
     cur->then_cmds = NULL;
@@ -908,6 +1474,57 @@ static int parse_line_simple(char *line, struct command **cmds_out, int *ncmds_o
             cur->in = NULL;
             cur->out = NULL;
             cur->append = 0;
+            cur->op_after = 0;
+            cur->cond_cmds = NULL;
+            cur->cond_ncmds = 0;
+            cur->then_cmds = NULL;
+            cur->then_ncmds = 0;
+            cur->else_cmds = NULL;
+            cur->else_ncmds = 0;
+            cur->for_var = NULL;
+            cur->for_values = NULL;
+            cur->for_nvalues = 0;
+            cur->for_body = NULL;
+            cur->for_body_ncmds = 0;
+            cur->case_word = NULL;
+            cur->case_items = NULL;
+            cur->case_item_count = 0;
+            cur->func_name = NULL;
+            cur->func_body = NULL;
+            cur->func_ncmds = 0;
+            continue;
+        }
+
+        if (strcmp(tok, "&&") == 0 || strcmp(tok, "||") == 0) {
+            int op = (tok[0] == '&') ? 1 : 2;  /* 1=&&, 2=|| */
+            free(tok);
+            if (cur->argc == 0) {
+                fprintf(stderr, "syntax error: expected command before operator\n");
+                free_commands(cmds, ncmds);
+                return -1;
+            }
+            
+            /* Set the operator for current command */
+            cur->op_after = op;
+            
+            if (ncmds >= cap) {
+                int new_cap = cap * 2;
+                struct command *tmp = realloc(cmds, (size_t)new_cap * sizeof(*cmds));
+                if (!tmp) {
+                    free_commands(cmds, ncmds);
+                    return -1;
+                }
+                cmds = tmp;
+                cap = new_cap;
+            }
+            cur = &cmds[ncmds++];
+            cur->type = CMD_SIMPLE;
+            cur->argv = NULL;
+            cur->argc = 0;
+            cur->in = NULL;
+            cur->out = NULL;
+            cur->append = 0;
+            cur->op_after = 0;
             cur->cond_cmds = NULL;
             cur->cond_ncmds = 0;
             cur->then_cmds = NULL;
@@ -1093,18 +1710,70 @@ int execute_commands(struct command *cmds, int ncmds, int *exit_requested) {
     }
 
     if (ncmds == 1 && cmds[0].type != CMD_SIMPLE) {
-        return run_command(&cmds[0], exit_requested);
+        int status = run_command(&cmds[0], exit_requested);
+        last_exit_status = status;
+        return status;
     }
 
     if (ncmds == 1 && cmds[0].argc > 0 && is_shell_function(cmds[0].argv[0])) {
-        return run_shell_function(cmds[0].argv[0]);
+        int status = run_shell_function(cmds[0].argv[0]);
+        last_exit_status = status;
+        return status;
     }
 
     if (ncmds == 1 && cmds[0].argc > 0 && is_builtin(cmds[0].argv[0])) {
-        return run_builtin_with_redirection(&cmds[0], exit_requested);
+        int status = run_builtin_with_redirection(&cmds[0], exit_requested);
+        last_exit_status = status;
+        return status;
     }
 
-    return run_pipeline(cmds, ncmds);
+    /* If no logical operators are present, execute the full pipeline or command list directly */
+    int has_logical = 0;
+    for (int i = 0; i < ncmds; i++) {
+        if (cmds[i].op_after != 0) {
+            has_logical = 1;
+            break;
+        }
+    }
+
+    if (!has_logical) {
+        int status = run_pipeline(cmds, ncmds);
+        if (exit_requested) {
+            *exit_requested = 0;
+        }
+        last_exit_status = status;
+        return status;
+    }
+
+    int status = 0;
+    int i = 0;
+    while (i < ncmds) {
+        int start = i;
+        int end = i;
+        while (end < ncmds - 1 && cmds[end].op_after == 0) {
+            end++;
+        }
+
+        int segment_len = end - start + 1;
+        status = run_pipeline(&cmds[start], segment_len);
+        if (exit_requested) {
+            *exit_requested = 0;
+        }
+
+        if (end < ncmds - 1) {
+            if (cmds[end].op_after == 1 && status != 0) {
+                break;
+            }
+            if (cmds[end].op_after == 2 && status == 0) {
+                break;
+            }
+        }
+
+        i = end + 1;
+    }
+
+    last_exit_status = status;
+    return status;
 }
 
 static int run_command(struct command *cmd, int *exit_requested) {
@@ -1253,9 +1922,8 @@ int run_pipeline(struct command *cmds, int ncmds) {
             }
 
             if (is_builtin(cmds[i].argv[0])) {
-                int dummy_exit = 0;
-                run_builtin(&cmds[i], &dummy_exit);
-                _exit(0);
+                int builtin_status = run_builtin(&cmds[i], NULL);
+                _exit(builtin_status);
             }
 
             execvp(cmds[i].argv[0], cmds[i].argv);
@@ -1287,6 +1955,7 @@ int run_pipeline(struct command *cmds, int ncmds) {
     }
 
     free(pids);
+    last_exit_status = exit_status;
     return exit_status;
 }
 

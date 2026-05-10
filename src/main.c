@@ -6,6 +6,9 @@ int main(int argc, char **argv) {
 
     srand((unsigned int)time(NULL));
 
+    /* Initialize shell special variables */
+    init_shell_special_vars(getpid());
+
     struct sigaction sa = {0};
     sa.sa_handler = SIG_IGN;
     sigaction(SIGINT, &sa, NULL);
@@ -15,7 +18,7 @@ int main(int argc, char **argv) {
         hist_file = "./.ush_hist";
     }
     load_history(hist_file);
-    
+
     /* source ushrc on startup */
     source_file(USHRC);
 

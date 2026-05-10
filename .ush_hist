@@ -172,3 +172,73 @@ exit
 ./tests/run.sh
 clear
 exit
+exit
+./tests/test_for.sh
+clear
+exit
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+__test
+time __test
+clear
+__test
+__test
+__test
+__test
+__test
+__test
+_test_builtin_
+type __test
+type _test_builtin_
+type pwd
+type -a pwd
+exit
+type while
+type -a false
+type false
+type -a yes
+clear
+exit
+asd
+da
+dasd
+sad
+sad
+c
+clear
+exit
+type -a asd
+type ls
+tyle -a ls
+type __test
+type _test_builtin_
+type type
+type -a type
+type set
+type unser
+type unset
+type -a unset
+type -a yes
+type yes
+exit
+type yes
+type -a yes
+type ezcrypt
+ezcrypt
+__test
+_test_builtin_
+clear
+exit

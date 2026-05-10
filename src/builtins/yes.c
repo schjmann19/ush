@@ -8,8 +8,9 @@ int builtin_yes(int argc, char *argv[]) {
     (void)argv;
     // restore SIGINT
     signal(SIGINT, SIG_DFL);
+    char* yes = argv[1] ? argv[1] : "y\n";
     loop {
-        write(1, "y\n", 2);
+        write(1, yes, 2);
     }
     return 0; // never reached
 }
